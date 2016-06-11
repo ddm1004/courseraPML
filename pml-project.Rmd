@@ -1,0 +1,66 @@
+---
+title: "Predicting the Method of Exercise"
+author: "Donald Miller"
+date: "June 11, 2016"
+output: html_document
+---
+
+```{r setup, echo=FALSE}
+library(caret)
+```
+
+```{r data, echo=FALSE}
+setwd("/home/duncan/Coursera/pml/")
+build <- read.csv("pml-training.csv")
+set.seed(1234)
+inTrain <- createDataPartition(build$classe, p=.6, list=FALSE)
+training <- build[inTrain,]
+build <- build[-inTrain,]
+inTest <- createDataPartition(build$classe, p=.5, list=FALSE)
+testing <- build[inTest,]
+validation <- build[-inTest,]
+final.testing <- read.csv("pml-testing.csv")
+```
+
+```{r model, echo=FALSE}
+#build Random Forest, GBM, and logistic regression model
+mod.rf <- train(classe~., method="rf", data=training)
+mod.gbm <- train(classe~., method="gbm", data=training, verbose=FALSE)
+mod.log <- train(classe~., method="glm", data=training, family="binomial")
+# create prediction on testing set
+pred.train.rf <- predict(mod.rf, newdata=validation, trControl(method="cv"))
+pred.train.gbm <- predict(mod.gbm, newdata=validation)
+pred.train.log <- predict(mod.log, newdata=validation)
+
+# Build combined model
+pred.train.df <- data.frame(pred.rf=pred.train.rf, pred.gbm=pred.train.gbm, 
+                            pred.log=pred.train.log, classe=validation$classe)
+mod.combined <- train(classe~., method="gam",data=pred.train.df)
+
+#in sample error
+
+
+
+#expected out of sample error
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
