@@ -5,12 +5,14 @@ date: "June 11, 2016"
 output: html_document
 ---
 
-```{r setup, echo=FALSE}
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
 library(caret)
+library(e1071)
+setwd("/home/duncan/Coursera/pml/")
+#setwd("/Users/ddm1004/Documents/Coursera/pml")
 ```
 
-```{r data, echo=FALSE}
-setwd("/home/duncan/Coursera/pml/")
+```{r data, echo=FALSE, message=FALSE, warning=FALSE}
 build <- read.csv("pml-training.csv")
 set.seed(1234)
 inTrain <- createDataPartition(build$classe, p=.6, list=FALSE)
@@ -20,47 +22,183 @@ inTest <- createDataPartition(build$classe, p=.5, list=FALSE)
 testing <- build[inTest,]
 validation <- build[-inTest,]
 final.testing <- read.csv("pml-testing.csv")
+rm(build)
+rm(inTrain)
+rm(inTest)
 ```
 
-```{r model, echo=FALSE}
-#build Random Forest, GBM, and logistic regression model
-mod.rf <- train(classe~., method="rf", data=training)
-mod.gbm <- train(classe~., method="gbm", data=training, verbose=FALSE)
-mod.log <- train(classe~., method="glm", data=training, family="binomial")
+```{r select, echo=FALSE, message=FALSE, warning=FALSE}
+#Covariate selection
+
+# remove columns with more than 50% NAs
+colToKeep <- apply(training, 2, function(x){ifelse(sum(is.na(x))/length(x)>.8, FALSE, TRUE)})
+
+# remove columns with limited variability
+nsv <- nearZeroVar(training, saveMetrics=TRUE)
+colToKeep <-  colToKeep & !nsv$nzv
+
+# remove timestamps and user name and X since they are not meaningful for prediction
+colToKeep <- colToKeep &!(colnames(training) %in% c("X","user_name","raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp"))
+
+training.subset <- training[,colToKeep==TRUE]
+
+# PCA
+preProc <- preProcess(subset(training.subset, select=-c(classe)), method="pca")
+training.pc <- predict(preProc, training.subset)
+```
+
+```{r model, echo=FALSE, eval=FALSE, message=FALSE, warning=FALSE}
+# Try different models and select best
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+set.seed(123)
+mod.lvq <- train(classe~., method="lvq", data=training.pc, trControl=control)
+set.seed(123)
+mod.svm <- train(classe~., method="svmRadial", data=training.pc, trControl=control)
+set.seed(123)
+mod.gbm <- train(classe~., method="gbm", data=training.pc, trControl=control, verbose=FALSE)
+set.seed(123)
+mod.rf <- train(classe~., method="rf", data=training.pc, trControl=control)
+set.seed(123)
+mod.nb <- train(classe~., method="nb", data=training.pc, trControl=control)
+set.seed(123)
+mod.lda <- train(classe~., method="lda", data=training.pc, trControl=control)
+
+#use Cross Validation to select fL and useKernel for Naive Bayes
+#numFolds <- trainControl(method="cv", number=10)
+#grid <- expand.grid(.fL=seq(0,1,.1), .usekernel=c(FALSE,TRUE), .adjust=c(1))
+#train(classe~., method="nb", data=training.pc, trControl=numFolds,tuneGrid=grid)
+
+# Use Cross Validation to select cv parameter for CART
+
+#grid <- expand.grid(.cp=seq(.00001,.0001,.00001))
+#train(classe~., data=training.pc, method="rpart", trControl=numFolds, tuneGrid=grid)
+#Optimal value, cp=6e-05
+mod.cart <- train(classe~., method="rpart", data=training.pc, trControl=control, cp=6e-5)
+```
+```{r load_models, echo=FALSE, message=FALSE, warning=FALSE}
+load("cartModel.RData")
+load("combinedModel1.RData")
+load("combinedModel2.RData")
+load("gbmModel.RData")
+load("ldaModel.RData")
+load("lvqModel2.RData")
+load("nbModel.RData")
+load("rfModel2.RData")
+load("svmModel.RData")
+```
+```{r model_compare, echo=FALSE, message=FALSE, warning=FALSE}
+# Collect results and determine best models
+results <- resamples(list(LVQ=mod.lvq,SVM=mod.svm,RF=mod.rf, GBM=mod.gbm, NB=mod.nb, LDA=mod.lda, CART=mod.cart))
+```
+```{r validation_data, echo=FALSE, message=FALSE, warning=FALSE}
+#Create validation set to use
+validation.subset <- validation[,colToKeep==TRUE]
+validation.pc <- predict(preProc, validation.subset)
+
 # create prediction on testing set
-pred.train.rf <- predict(mod.rf, newdata=validation, trControl(method="cv"))
-pred.train.gbm <- predict(mod.gbm, newdata=validation)
-pred.train.log <- predict(mod.log, newdata=validation)
-
+pred.val.rf <- predict(mod.rf, newdata=validation.pc)
+pred.val.svm <- predict(mod.svm, newdata=validation.pc)
+pred.val.gbm <- predict(mod.gbm, newdata=validation.pc)
+pred.val.nb <- predict(mod.nb, newdata=validation.pc)
+pred.val.lvq <- predict(mod.lvq, newdata=validation.pc)
+pred.val.lda <- predict(mod.lda, newdata=validation.pc)
+pred.val.cart <- predict(mod.cart, newdata=validation.pc)
+```
+```{r model_combined, echo=FALSE, eval=FALSE, message=FALSE, warning=FALSE}
 # Build combined model
-pred.train.df <- data.frame(pred.rf=pred.train.rf, pred.gbm=pred.train.gbm, 
-                            pred.log=pred.train.log, classe=validation$classe)
-mod.combined <- train(classe~., method="gam",data=pred.train.df)
+pred.train.df <- data.frame(pred.rf=pred.val.rf, pred.svm=pred.val.svm, pred.gbm=pred.val.gbm,
+                            classe=validation$classe)
+mod.combined <- train(classe~., method="rf",data=pred.train.df)
 
-#in sample error
+pred.train.df2 <- data.frame(pred.rf=pred.val.rf, pred.svm=pred.val.svm, pred.gbm=pred.val.gbm, pred.nb=pred.val.nb, pred.lvq=pred.val.lvq, pred.lda=pred.val.lda, pred.cart=pred.val.cart,
+                            classe=validation$classe)
+mod.combined2 <- train(classe~., method="rf",data=pred.train.df2)
+```
+```{r validationTest, echo=FALSE, message=FALSE, warning=FALSE}
+pred.combined.val <- predict(mod.combined2)
+pred.combined.acc <- sum(diag(table(validation$classe, pred.combined.val)))/length(validation$classe)
+pred.rf.acc <- sum(diag(table(validation$classe,pred.val.rf)))/length(validation$classe)
+```
+```{r testing, echo=FALSE, message=FALSE, warning=FALSE}
+# Test combined model
+testing.subset <- testing[, colToKeep==TRUE]
+testing.pc <- predict(preProc, testing.subset)
 
+pred.test.rf <- predict(mod.rf, newdata=testing.pc)
+pred.test.svm <- predict(mod.svm, newdata=testing.pc)
+pred.test.gbm <- predict(mod.gbm, newdata=testing.pc)
+pred.test.nb <- predict(mod.nb, newdata=testing.pc)
+pred.test.lvq <- predict(mod.lvq, newdata=testing.pc)
+pred.test.lda <- predict(mod.lda, newdata=testing.pc)
+pred.test.cart <- predict(mod.cart, newdata=testing.pc)
+test.df <- data.frame(pred.rf=pred.test.rf, pred.svm=pred.test.svm, pred.gbm=pred.test.gbm, pred.nb=pred.test.nb, pred.lvq=pred.test.lvq, pred.lda=pred.test.lda, pred.cart=pred.test.cart, classe=testing$classe)
 
+pred.combined.test <- predict(mod.combined2, test.df)
+ct.table <- table(test.df$classe, pred.combined.test)
+ct.accuracy <- sum(diag(ct.table))/length(testing$classe)
+```
+```{r final_testing, echo=FALSE, eval=FALSE, message=FALSE, warning=FALSE}
+# creat final testing data
+final.testing.subset <- final.testing[,colToKeep==TRUE]
+final.testing.pc <- predict(preProc, final.testing.subset)
 
-#expected out of sample error
+pred.final.rf <- predict(mod.rf, newdata=final.testing.pc)
+pred.final.svm <- predict(mod.svm, newdata=final.testing.pc)
+pred.final.gbm <- predict(mod.gbm, newdata=final.testing.pc)
+pred.final.nb <- predict(mod.nb, newdata=final.testing.pc)
+pred.final.lvq <- predict(mod.lvq, newdata=final.testing.pc)
+pred.final.lda <- predict(mod.lda, newdata=final.testing.pc)
+pred.final.cart <- predict(mod.cart, newdata=final.testing.pc)
+final.df <- data.frame(pred.rf=pred.final.rf, pred.svm=pred.final.svm, pred.gbm=pred.final.gbm, pred.nb=pred.final.nb, pred.lvq=pred.final.lvq, pred.lda=pred.final.lda, pred.cart=pred.final.cart)
+
+predict(mod.combined2, final.df)
 
 ```
 
-## R Markdown
+## Introduction
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Given the large number of personal devices in use today, a large number of individuals are measuring their behavior.  In this project, some of the data gathered by individuals is used to estimate how well they execute five different weight lifting exercises.  More information on the data is available here: http://groupware.les.inf.puc-rio.br/har under the Weightlifting section.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+## Experimental design
 
-```{r cars}
-summary(cars)
+This experiment divides the data into three sets.  First there is a training set, used to build the base models which uses 60% of the data.  Next there is a validation set, used to train an aggregate model, which uses 20% of the data.  Finally, there is a testing set, used to approximate the out-of-sample error, which also represents 20% of the data.  This was done by first using createDataPartition to divide the data with a 60/40 split.  Then, createDataPartition was used again to split the 40% into to 20% intervals.
+
+## Feature Selection
+
+Model building started by attempting to reduce the number of features used to generate our model.  Looking at the NAs in the data, if we remove features that are over 80% NA, we remove all columns with NA.  This reduces from 160 columns to 93.  We then reduce the columns further by removing all Near Zero Variance columns, leaving 59.  Finally we remove the id columns, time stamp columns, and user_name column, leaving 54 columns.  We then perform principle component analysis explaining 95% of the variability and end up with 26 features to use to construct our models.  However, looking at the first two principle components in the graph below, it will clearly take more dimensions than are easily shown to separate the classes appropriately.  While the first two principle components separate the data into five sections, they do not separate it according to the classes.
+
+```{r plot1, echo=FALSE}
+ggplot(training.pc, aes(x=PC1, y=PC2, color=classe))+geom_point(alpha=.5)+ggtitle("Principle Components One and Two")
 ```
 
-## Including Plots
+## Cross Validation
 
-You can also embed plots, for example:
+Cross Validation is used in two ways.  First, Cross Validation is used to generate parameters for two of the models built, the cp value for CART model, resulting in `cp=6e-5`, and the fL and usekernenl values for the Naive Bayesian model, `0` and TRUE respectively.  In both cases, 10 fold cross validation was used.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+Additionally, Cross Validation is used to generate and compare the models.  For each model, 10 fold cross validation was done three times, and the average accuracy was used to determine the relative performance of each model.  As can be seen in the figure below, the Random Forest Model is the most accurate.
+
+```{r plot2, echo=FALSE}
+bwplot(results,main="Accuracy of Individual Models")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## The Final Model
+
+The final model is generated as a combination of the seven models shown in the above figure.  The generated models are:
+
+* Random Forests
+* Support Vector Machines
+* Generalized Boosting Regression Modeling
+* Naive Bayes
+* Learning Vector Quantification
+* Linear Discriminant Analysis
+* CART
+
+The final model is generated by generating predictions from each of the seven models, and using this data to train a random forest model to generate a final model, which is more accurate (`pred.combined.acc`) than any of the other models on the validation set(`pred.rf.acc`)
+
+## Expected out of Sample Error
+
+The out of sample accuracy is `ct.accuracy`.  This is generated on the reserved testing set, which was only used to test the final model.  Each of the seven models was used on the data, and predictions are generated based on this data using the final model.
+
+## Conclusions
+
+Learning algorithms can be used to determine whether exercise are being performed properly, or follow known common problems, given the use of common sensors.  A model was built using seven different algorithms (random forests, support vector machines, generalized boosting regression modeling, Naive Bayes, Learning Vector Quantification, Linear Discriminant Analysis, and CART).  The seven algorithms were combined using Random Forests, resulting in a final model with an out of sample accuracy of `ct.accuracy`.  
